@@ -2,7 +2,14 @@ import shutil
 
 from dotenv import load_dotenv
 
-from pdf_loader import load_documents
+from pdf_loader import (
+    load_documents,
+    list_teams,
+    roster_tournaments,
+    league_winner_tournaments,
+    season_context,
+    years_mentioned,
+)
 from embeddings import get_embedding_model
 from vector_store import PERSIST_DIR, get_vector_store, safe_count, index_documents
 from retriever import retrieve_documents
@@ -53,10 +60,30 @@ while True:
         question
     )
 
+    roster_context = "\n".join(
+        f"Teams in {t}: {', '.join(list_teams(t))}"
+        for t in roster_tournaments()
+    )
+
+    season_blocks = [
+        f"[{t} - {year}]\n{block}"
+        for year in years_mentioned(question)
+        for t in league_winner_tournaments()
+        for block in [season_context(t, year)]
+        if block
+    ]
+    season_context_text = "\n\n".join(season_blocks)
+
     context = "\n\n".join(
         doc.page_content
         for doc, score in results
     )
+
+    if roster_context:
+        context = f"{roster_context}\n\n{context}"
+
+    if season_context_text:
+        context = f"{season_context_text}\n\n{context}"
 
     prompt = build_prompt(
         context,

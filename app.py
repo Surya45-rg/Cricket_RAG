@@ -4,7 +4,15 @@ import shutil
 import streamlit as st
 from dotenv import load_dotenv
 
-from pdf_loader import load_documents, list_tournaments
+from pdf_loader import (
+    load_documents,
+    list_tournaments,
+    list_teams,
+    roster_tournaments,
+    league_winner_tournaments,
+    season_context,
+    years_mentioned,
+)
 from embeddings import get_embedding_model
 from vector_store import PERSIST_DIR, get_vector_store, safe_count, index_documents
 from retriever import retrieve_documents
@@ -24,10 +32,6 @@ if not os.environ.get("GROQ_API_KEY"):
 
 st.set_page_config(page_title="Cricket RAG", page_icon=":material/sports_cricket:")
 
-# Sample questions per tournament, shown in the sidebar so it's obvious what
-# kind of question actually works well for each source. Phrased to avoid the
-# known weak spots (exact dates, "the final") on the IPL/BBL match chunks -
-# those favor narrative/lookup questions instead.
 SAMPLE_QUESTIONS = {
     "All": [
         "Who won the 2023 Cricket World Cup?",
@@ -74,7 +78,51 @@ SAMPLE_QUESTIONS = {
         "Tell me about the format of the 2019 Cricket World Cup.",
         "Which teams competed in the 2019 World Cup?",
     ],
+    "CPL": [
+        "Who won the Caribbean Premier League in 2023?",
+        "Which teams have played in the CPL?",
+        "Who was Player of the Series in the 2020 CPL?",
+    ],
+    "LPL": [
+        "Who won the Lanka Premier League in 2024?",
+        "Which teams have played in the LPL?",
+        "What happened to the 2025 LPL season?",
+    ],
+    "PSL": [
+        "Who won the Pakistan Super League in 2022?",
+        "Which teams have played in the PSL?",
+        "Which franchise has won the most PSL titles?",
+    ],
+    "MLC": [
+        "Who won Major League Cricket in 2023?",
+        "Which teams play in Major League Cricket?",
+    ],
+    "SA20": [
+        "Who won the SA20 in 2025?",
+        "Which teams play in the SA20?",
+    ],
+    "THE_HUNDRED": [
+        "Who won The Hundred in 2024?",
+        "Which teams compete in The Hundred?",
+    ],
+    "ILT20": [
+        "Who won the ILT20 in its first season?",
+        "Which teams play in the ILT20?",
+    ],
 }
+
+_TOURNAMENT_BUCKETS = [
+    ("(CPL)", "CPL"),
+    ("(LPL)", "LPL"),
+    ("(PSL)", "PSL"),
+    ("(MLC)", "MLC"),
+    ("(ILT20)", "ILT20"),
+    ("HUNDRED", "THE_HUNDRED"),
+    ("IPL", "IPL"),
+    ("BBL", "BBL"),
+    ("CHAMPIONS", "CHAMPIONS_TROPHY_2025"),
+    ("CRICKET WORLD CUP 2023", "CWC_2023"),
+]
 
 
 def classify_tournament(tournament):
@@ -82,22 +130,22 @@ def classify_tournament(tournament):
 
     t = tournament.upper()
 
-    if "IPL" in t:
-        return "IPL"
-    if "BBL" in t:
-        return "BBL"
-    if "T20" in t and "WOMEN" in t:
-        return "T20_WC_2024_WOMEN"
-    if "T20" in t and "MEN" in t:
-        return "T20_WC_2024_MEN"
+    if t == "SA20":
+        return "SA20"
+
     if "WORLD TEST CHAMPIONSHIP" in t and "2021" in t:
         return "WTC_FINAL_2021"
     if "WORLD TEST CHAMPIONSHIP" in t and "2025" in t:
         return "WTC_FINAL_2025"
-    if "CHAMPIONS" in t:
-        return "CHAMPIONS_TROPHY_2025"
-    if "CRICKET WORLD CUP 2023" in t:
-        return "CWC_2023"
+    if "T20" in t and "WOMEN" in t:
+        return "T20_WC_2024_WOMEN"
+    if "T20" in t and "MEN" in t:
+        return "T20_WC_2024_MEN"
+
+    for substring, bucket in _TOURNAMENT_BUCKETS:
+        if substring in t:
+            return bucket
+
     if "2019" in t or "MEDIAGUIDE" in t:
         return "CWC_2019_GUIDE"
 
@@ -152,8 +200,9 @@ def load_vector_db():
 
 st.title(":material/sports_cricket: Cricket RAG")
 st.caption(
-    "Ask questions about IPL, BBL, and ICC tournament PDFs (World Cups, "
-    "Champions Trophy, WTC finals)."
+    "Ask questions about IPL, BBL, seven T20 franchise leagues (CPL, LPL, PSL, MLC, "
+    "SA20, The Hundred, ILT20), and ICC tournament PDFs (World Cups, Champions "
+    "Trophy, WTC finals)."
 )
 
 with st.sidebar:
@@ -214,7 +263,42 @@ if prompt_text:
                 tournament=filter_tournament,
             )
 
+            if filter_tournament in roster_tournaments():
+                relevant_tournaments = [filter_tournament]
+            elif filter_tournament is None:
+                relevant_tournaments = roster_tournaments()
+            else:
+                relevant_tournaments = []
+
+            roster_context = "\n".join(
+                f"Teams in {t}: {', '.join(list_teams(t))}"
+                for t in relevant_tournaments
+            )
+
+            if filter_tournament in league_winner_tournaments():
+                season_lookup_tournaments = [filter_tournament]
+            elif filter_tournament is None:
+                season_lookup_tournaments = league_winner_tournaments()
+            else:
+                season_lookup_tournaments = []
+
+            season_blocks = [
+                f"[{t} - {year}]\n{block}"
+                for year in years_mentioned(prompt_text)
+                for t in season_lookup_tournaments
+                for block in [season_context(t, year)]
+                if block
+            ]
+            season_context_text = "\n\n".join(season_blocks)
+
             context = "\n\n".join(doc.page_content for doc, score in results)
+
+            if roster_context:
+                context = f"{roster_context}\n\n{context}"
+
+            if season_context_text:
+                context = f"{season_context_text}\n\n{context}"
+
             full_prompt = build_prompt(context, prompt_text)
 
             response = llm.invoke(full_prompt)
